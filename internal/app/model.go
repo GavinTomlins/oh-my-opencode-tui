@@ -15,7 +15,7 @@ import (
 	providercatalog "github.com/gavintomlins/oh-my-opencode-tui/internal/providers"
 )
 
-const appVersion = "v0.1.1"
+const appVersion = "v0.1.2"
 
 type Section int
 
@@ -375,8 +375,15 @@ func (m Model) View() string {
 }
 
 func (m Model) viewTitleBar() string {
-	title := titleBarStyle.Render(fmt.Sprintf(" Oh My Opencode TUI %s ", appVersion))
-	return title
+	titleText := fmt.Sprintf(" Oh My Opencode TUI %s ", appVersion)
+	// Make title bar fill the width
+	style := lipgloss.NewStyle().
+		Background(cyan).
+		Foreground(black).
+		Bold(true).
+		Padding(0, 1).
+		Width(m.width)
+	return style.Render(titleText)
 }
 
 func (m Model) viewStatusBar() string {
@@ -1208,7 +1215,11 @@ func (m Model) viewAssignments(keys []string, values map[string]config.Assignmen
 		listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
 	}
 
-	detailContent := fmt.Sprintf("Select a %s and press Enter to configure", noun)
+	detailContent := lipgloss.JoinVertical(lipgloss.Left,
+		mutedStyle.Render(fmt.Sprintf("Select a %s from the list", noun)),
+		"",
+		cmdStyle.Render(" Enter ")+" configure ",
+	)
 	if m.viewState == stateDetail && len(keys) > 0 && m.currentSelection() < len(keys) {
 		key := keys[m.currentSelection()]
 		assignment := values[key]
@@ -1464,7 +1475,7 @@ func (m Model) viewProviderEditor() string {
 		lines = append(lines, "  "+mutedStyle.Render(label), field, "")
 	}
 
-	help := "  " + cmdStyle.Render(" tab ") + "next " + cmdStyle.Render(" ctrl+s ") + "save " + cmdStyle.Render(" esc ") + "cancel"
+	help := "  " + cmdStyle.Render(" tab ") + "next " + cmdStyle.Render(" shift+tab ") + "prev " + cmdStyle.Render(" ctrl+s ") + "save " + cmdStyle.Render(" esc ") + "cancel"
 	lines = append(lines, help)
 
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
