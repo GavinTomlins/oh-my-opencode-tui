@@ -15,7 +15,7 @@ import (
 	providercatalog "github.com/gavintomlins/oh-my-opencode-tui/internal/providers"
 )
 
-const appVersion = "v0.1.3"
+const appVersion = "v0.1.4"
 
 type Section int
 
@@ -416,7 +416,7 @@ func (m Model) viewFooter() string {
 	commands := []string{
 		cmdStyle.Render(" ↑↓ ") + "navigate ",
 		cmdStyle.Render(" enter ") + "select ",
-		cmdStyle.Render(" shift+enter ") + "back ",
+		cmdStyle.Render(" esc ") + "back ",
 		cmdStyle.Render(" / ") + "search ",
 		cmdStyle.Render(" ctrl+s ") + "save ",
 		cmdStyle.Render(" q ") + "quit ",
@@ -1231,7 +1231,7 @@ func (m Model) viewAssignments(keys []string, values map[string]config.Assignmen
 			"",
 			cmdStyle.Render(" Enter ")+" select model ",
 			cmdStyle.Render(" x ")+" clear ",
-			cmdStyle.Render(" shift+enter ")+" back to list ",
+			cmdStyle.Render(" esc ")+" back ",
 		)
 		if assignment.Prompt != "" {
 			detailContent = lipgloss.JoinVertical(lipgloss.Left, detailContent, "", mutedStyle.Render("Prompt:"), mutedStyle.Render(shorten(assignment.Prompt, 100)))
@@ -1425,7 +1425,7 @@ func (m Model) viewModelPicker() string {
 	}
 
 	searchLine := "  " + m.search.View()
-	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "select " + cmdStyle.Render(" esc ") + "cancel " + cmdStyle.Render(" shift+enter ") + "back " + cmdStyle.Render(" type ") + "filter"
+	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "select " + cmdStyle.Render(" esc ") + "cancel " + cmdStyle.Render(" esc ") + "back " + cmdStyle.Render(" type ") + "filter"
 
 	body := lipgloss.JoinVertical(lipgloss.Left, titleBar, "", searchLine, "", listContent, "", help)
 	return body
