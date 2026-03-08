@@ -311,8 +311,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+enter":
 			if m.viewState == stateDetail {
 				m.viewState = stateList
+				m.status = "Returned to list view"
 			}
 			return m, nil
+		case "esc":
+			if m.viewState == stateDetail {
+				m.viewState = stateList
+				m.status = "Returned to list view"
+				return m, nil
+			}
 		case "/":
 			m.searchFocused = true
 			m.search.Focus()
@@ -510,11 +517,12 @@ func (m *Model) updateProviderEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
-		case "esc":
+		case "esc", "shift+enter":
 			m.mode = modeNormal
 			m.resetSearch("Search")
 			m.searchFocused = false
 			m.search.Blur()
+			m.status = "Cancelled provider edit"
 			return *m, nil
 		case "tab":
 			m.providerForm.focus = (m.providerForm.focus + 1) % len(m.providerForm.inputs)
