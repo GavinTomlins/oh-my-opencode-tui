@@ -153,6 +153,7 @@ type Model struct {
 	catalogSelection int
 	providerForm     providerForm
 	undo             undoStack
+	helpSelection    int
 
 	builtinTemplates []providercatalog.Template
 	builtinMap       map[string]providercatalog.Template
@@ -293,12 +294,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "down", "j":
-			if m.viewState == stateList {
+			if m.currentSection() == SectionHelp {
+				// Navigate help links
+				if m.helpSelection < 4 {
+					m.helpSelection++
+				}
+			} else if m.viewState == stateList {
 				m.moveSelection(1)
 			}
 			return m, nil
 		case "up", "k":
-			if m.viewState == stateList {
+			if m.currentSection() == SectionHelp {
+				// Navigate help links
+				if m.helpSelection > 0 {
+					m.helpSelection--
+				}
+			} else if m.viewState == stateList {
 				m.moveSelection(-1)
 			}
 			return m, nil
@@ -714,7 +725,21 @@ func (m *Model) enterMode() (tea.Model, tea.Cmd) {
 	case SectionReview:
 		m.undo.clear()
 		return m.save()
-	case SectionHelp, SectionSkills:
+	case SectionHelp:
+		// Open/copy the selected help link
+		helpLinks := []string{
+			"https://github.com/opencode-ai/opencode",
+			"https://github.com/gavintomlins/oh-my-opencode",
+			"https://agentskills.io/home",
+			"https://github.com/awesome-opencode/awesome-opencode",
+			"https://charm.sh",
+		}
+		if m.helpSelection >= 0 && m.helpSelection < len(helpLinks) {
+			url := helpLinks[m.helpSelection]
+			m.status = fmt.Sprintf("Link: %s (copied to clipboard if supported)", url)
+		}
+		return *m, nil
+	case SectionSkills:
 		// These are display-only sections, Enter just acknowledges them
 		m.status = fmt.Sprintf("Viewing %s section", sectionTitle(m.currentSection()))
 		return *m, nil
@@ -1354,30 +1379,39 @@ func (m Model) viewReview(width int) string {
 
 
 func (m Model) viewHelp(width int) string {
-	content := lipgloss.JoinVertical(lipgloss.Left,
+	helpLinks := []struct {
+		name string
+		url  string
+	}{
+		{"opencode repository", "https://github.com/opencode-ai/opencode"},
+		{"oh-my-opencode repository", "https://github.com/gavintomlins/oh-my-opencode"},
+		{"Agent Skills", "https://agentskills.io/home"},
+		{"Awesome Opencode", "https://github.com/awesome-opencode/awesome-opencode"},
+		{"Charm.sh (TUI Framework)", "https://charm.sh"},
+	}
+
+	items := []string{
 		detailTitleStyle.Render("Help & Resources"),
 		"",
 		"Useful Links:",
 		"",
-		"  • opencode repository:",
-		"    https://github.com/opencode-ai/opencode",
-		"",
-		"  • oh-my-opencode repository:",
-		"    https://github.com/gavintomlins/oh-my-opencode",
-		"",
-		"  • Agent Skills:",
-		"    https://agentskills.io/home",
-		"",
-		"  • Awesome Opencode:",
-		"    https://github.com/awesome-opencode/awesome-opencode",
-		"",
-		"  • Charm.sh (TUI Framework):",
-		"    https://charm.sh",
-		"    Built with Bubble Tea, Lipgloss, and Bubbles",
-		"",
-		mutedStyle.Render("Navigate with ↑↓ and press Enter to open links in browser (if supported)"),
-	)
+	}
 
+	for i, link := range helpLinks {
+		line := fmt.Sprintf("  • %s", link.name)
+		if i == m.helpSelection {
+			line = selectedItemStyle.Render("▶ " + link.name)
+		}
+		items = append(items, line)
+		items = append(items, mutedStyle.Render("    "+link.url))
+		items = append(items, "")
+	}
+
+	items = append(items, "")
+	items = append(items, cmdStyle.Render(" ↑↓ ")+"navigate "+cmdStyle.Render(" enter ")+"open link "+cmdStyle.Render(" esc ")+"back")
+	items = append(items, mutedStyle.Render("Press Enter to copy URL to clipboard (if supported)"))
+
+	content := lipgloss.JoinVertical(lipgloss.Left, items...)
 	return reviewPaneStyle.Width(width).Height(m.height - 10).Render(content)
 }
 
