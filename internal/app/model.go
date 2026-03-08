@@ -736,7 +736,7 @@ func (m *Model) enterMode() (tea.Model, tea.Cmd) {
 	case SectionHelp:
 		// Open the selected help link in browser
 		helpLinks := []string{
-			"https://github.com/opencode-ai/opencode",
+			"https://github.com/anomalyco/opencode",
 			"https://github.com/gavintomlins/oh-my-opencode",
 			"https://agentskills.io/home",
 			"https://github.com/awesome-opencode/awesome-opencode",
@@ -1417,7 +1417,7 @@ func (m Model) viewHelp(width int) string {
 		name string
 		url  string
 	}{
-		{"opencode repository", "https://github.com/opencode-ai/opencode"},
+		{"opencode repository", "https://github.com/anomalyco/opencode"},
 		{"oh-my-opencode repository", "https://github.com/gavintomlins/oh-my-opencode"},
 		{"Agent Skills", "https://agentskills.io/home"},
 		{"Awesome Opencode", "https://github.com/awesome-opencode/awesome-opencode"},
@@ -1471,7 +1471,7 @@ func (m Model) viewSkills(width int) string {
 	items = append(items, "    https://github.com/awesome-opencode/awesome-opencode")
 	items = append(items, "")
 	items = append(items, "  • opencode Core:")
-	items = append(items, "    https://github.com/opencode-ai/opencode")
+	items = append(items, "    https://github.com/anomalyco/opencode")
 	items = append(items, "")
 	items = append(items, mutedStyle.Render("Skills extend opencode functionality."))
 	items = append(items, mutedStyle.Render("Install external skills via the opencode CLI."))
