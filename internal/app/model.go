@@ -428,6 +428,12 @@ func formatTime(t time.Time) string {
 }
 
 func (m Model) viewFooter() string {
+	// Show status message if present
+	if m.status != "" {
+		statusLine := mutedStyle.Render(m.status)
+		return footerBarStyle.Width(m.width).Render(statusLine)
+	}
+
 	commands := []string{
 		cmdStyle.Render(" ↑↓ ") + "navigate ",
 		cmdStyle.Render(" enter ") + "select ",
