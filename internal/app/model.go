@@ -15,7 +15,7 @@ import (
 	providercatalog "github.com/gavintomlins/oh-my-opencode-tui/internal/providers"
 )
 
-const appVersion = "v0.1.2"
+const appVersion = "v0.1.3"
 
 type Section int
 
@@ -1452,7 +1452,7 @@ func (m Model) viewProviderCatalog() string {
 	}
 
 	searchLine := "  " + m.search.View()
-	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "configure " + cmdStyle.Render(" esc ") + "cancel"
+	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "configure " + cmdStyle.Render(" esc/shift+enter ") + "back"
 
 	body := lipgloss.JoinVertical(lipgloss.Left, titleBar, "", searchLine, "", listContent, "", help)
 	return body
