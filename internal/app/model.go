@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -732,7 +734,7 @@ func (m *Model) enterMode() (tea.Model, tea.Cmd) {
 		m.undo.clear()
 		return m.save()
 	case SectionHelp:
-		// Open/copy the selected help link
+		// Open the selected help link in browser
 		helpLinks := []string{
 			"https://github.com/opencode-ai/opencode",
 			"https://github.com/gavintomlins/oh-my-opencode",
@@ -742,7 +744,11 @@ func (m *Model) enterMode() (tea.Model, tea.Cmd) {
 		}
 		if m.helpSelection >= 0 && m.helpSelection < len(helpLinks) {
 			url := helpLinks[m.helpSelection]
-			m.status = fmt.Sprintf("Link: %s (copied to clipboard if supported)", url)
+			if err := openBrowser(url); err != nil {
+				m.status = fmt.Sprintf("Error opening browser: %v", err)
+			} else {
+				m.status = fmt.Sprintf("Opening: %s", url)
+			}
 		}
 		return *m, nil
 	case SectionSkills:
@@ -1384,6 +1390,28 @@ func (m Model) viewReview(width int) string {
 
 
 
+// openBrowser opens the specified URL in the default browser
+func openBrowser(url string) error {
+	var cmd string
+	var args []string
+
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+		args = []string{url}
+	case "linux":
+		cmd = "xdg-open"
+		args = []string{url}
+	case "windows":
+		cmd = "rundll32"
+		args = []string{"url.dll,FileProtocolHandler", url}
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+
+	return exec.Command(cmd, args...).Start()
+}
+
 func (m Model) viewHelp(width int) string {
 	helpLinks := []struct {
 		name string
@@ -1415,7 +1443,7 @@ func (m Model) viewHelp(width int) string {
 
 	items = append(items, "")
 	items = append(items, cmdStyle.Render(" ↑↓ ")+"navigate "+cmdStyle.Render(" enter ")+"open link "+cmdStyle.Render(" esc ")+"back")
-	items = append(items, mutedStyle.Render("Press Enter to copy URL to clipboard (if supported)"))
+	items = append(items, mutedStyle.Render("Press Enter to open link in browser"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, items...)
 	return reviewPaneStyle.Width(width).Height(m.height - 10).Render(content)
