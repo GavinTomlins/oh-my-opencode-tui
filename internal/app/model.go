@@ -15,7 +15,7 @@ import (
 	providercatalog "github.com/gavintomlins/oh-my-opencode-tui/internal/providers"
 )
 
-const appVersion = "v0.1.0"
+const appVersion = "v0.1.1"
 
 type Section int
 
