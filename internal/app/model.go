@@ -714,6 +714,10 @@ func (m *Model) enterMode() (tea.Model, tea.Cmd) {
 	case SectionReview:
 		m.undo.clear()
 		return m.save()
+	case SectionHelp, SectionSkills:
+		// These are display-only sections, Enter just acknowledges them
+		m.status = fmt.Sprintf("Viewing %s section", sectionTitle(m.currentSection()))
+		return *m, nil
 	}
 	return *m, nil
 }
