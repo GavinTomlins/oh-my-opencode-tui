@@ -404,6 +404,10 @@ func (m Model) viewStatusBar() string {
 		}
 	}
 
+	// Add version to last line
+	versionStr := fmt.Sprintf("  Version: %s", appVersion)
+	lines = append(lines, versionStr)
+
 	content := strings.Join(lines, "\n")
 	return statusBarStyle.Width(m.width).Render(content)
 }
