@@ -1388,8 +1388,6 @@ func (m Model) viewReview(width int) string {
 	return reviewPaneStyle.Width(width).Height(m.height - 10).Render(content)
 }
 
-
-
 // openBrowser opens the specified URL in the default browser
 func openBrowser(url string) error {
 	var cmd string
@@ -1489,19 +1487,45 @@ func (m Model) viewModelPicker() string {
 	if len(options) == 0 {
 		listContent = mutedStyle.Render("  No models match your search")
 	} else {
-		items := make([]string, len(options))
-		for i, opt := range options {
-			line := fmt.Sprintf("  %s / %s", opt.ProviderName, opt.Name)
-			if i == m.pickerSelection {
-				line = pickerSelectedStyle.Render("▶ " + opt.ProviderName + " / " + opt.Name + " ")
-			}
-			items[i] = line
+		providerCounts := map[string]int{}
+		for _, opt := range options {
+			providerCounts[opt.ProviderName]++
 		}
+
+		items := make([]string, 0, len(options)+len(providerCounts))
+		currentProvider := ""
+		for i, opt := range options {
+			if opt.ProviderName != currentProvider {
+				currentProvider = opt.ProviderName
+				header := pickerProviderHeaderStyle.Render("  " + currentProvider)
+				count := pickerProviderMetaStyle.Render(fmt.Sprintf(" %d", providerCounts[currentProvider]))
+				items = append(items, lipgloss.JoinHorizontal(lipgloss.Left, header, count))
+			}
+
+			label := "  " + opt.Name
+			if i == m.pickerSelection {
+				label = pickerSelectedStyle.Render("▶ " + opt.Name + " ")
+			}
+
+			metaParts := []string{}
+			if opt.ID != "" {
+				metaParts = append(metaParts, opt.ID)
+			}
+			if opt.Source != "" {
+				metaParts = append(metaParts, opt.Source)
+			}
+
+			if len(metaParts) > 0 {
+				label = lipgloss.JoinHorizontal(lipgloss.Left, label, pickerModelMetaStyle.Render("  "+strings.Join(metaParts, "  •  ")))
+			}
+			items = append(items, label)
+		}
+
 		listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
 	}
 
 	searchLine := "  " + m.search.View()
-	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "select " + cmdStyle.Render(" esc ") + "cancel " + cmdStyle.Render(" esc ") + "back " + cmdStyle.Render(" type ") + "filter"
+	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "select " + cmdStyle.Render(" esc ") + "back " + cmdStyle.Render(" type ") + "filter"
 
 	body := lipgloss.JoinVertical(lipgloss.Left, titleBar, "", searchLine, "", listContent, "", help)
 	return body
@@ -1758,6 +1782,7 @@ var (
 	background = lipgloss.Color("235")
 	cyan       = lipgloss.Color("81")
 	green      = lipgloss.Color("113")
+	yellow     = lipgloss.Color("221")
 	muted      = lipgloss.Color("245")
 	red        = lipgloss.Color("204")
 	cream      = lipgloss.Color("255")
@@ -1890,6 +1915,17 @@ var (
 				Background(cyan).
 				Foreground(black).
 				Bold(true)
+
+	pickerProviderHeaderStyle = lipgloss.NewStyle().
+					Foreground(green).
+					Bold(true)
+
+	pickerProviderMetaStyle = lipgloss.NewStyle().
+				Foreground(yellow).
+				Bold(true)
+
+	pickerModelMetaStyle = lipgloss.NewStyle().
+				Foreground(muted)
 
 	pickerHelpStyle = lipgloss.NewStyle().
 			Foreground(muted)
