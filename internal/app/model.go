@@ -17,7 +17,14 @@ import (
 	providercatalog "github.com/gavintomlins/oh-my-opencode-tui/internal/providers"
 )
 
-const appVersion = "v0.1.4"
+const appVersionBase = "v0.1.4"
+
+func getAppVersion(changeCount int) string {
+	if changeCount == 0 {
+		return appVersionBase
+	}
+	return fmt.Sprintf("%s+%d", appVersionBase, changeCount)
+}
 
 type Section int
 
@@ -39,6 +46,9 @@ const (
 	modeModelPicker
 	modeProviderCatalog
 	modeProviderEditor
+	modeProfileCreator
+	modeBulkAssign
+	modeSwapProvider
 )
 
 type pickerKind int
@@ -79,12 +89,37 @@ type providerForm struct {
 	focus    int
 }
 
+type profileForm struct {
+	inputs []textinput.Model
+	focus  int
+}
+
+type bulkAssignState struct {
+	selectedModel string
+	targets       []string
+	targetType    string // "agents" or "categories"
+	targetProfile string // profile key to assign to (empty = active profile)
+}
+
+type swapProviderState struct {
+	fromProvider  string
+	toProvider    string
+	preview       map[string]string            // old model -> new model mappings
+	oldAgents     map[string]config.Assignment // for undo
+	oldCategories map[string]config.Assignment // for undo
+	oldDefault    string                       // for undo
+}
+
 type edit struct {
 	section  Section
 	key      string
 	oldValue string
 	newValue string
 	editType string
+	// Bulk operation fields for undo
+	oldAgents     map[string]config.Assignment
+	oldCategories map[string]config.Assignment
+	oldDefault    string
 }
 
 type undoStack struct {
@@ -113,6 +148,10 @@ func (u *undoStack) canUndo() bool {
 
 func (u *undoStack) clear() {
 	u.edits = nil
+}
+
+func (u *undoStack) changeCount() int {
+	return len(u.edits)
 }
 
 type viewState int
@@ -156,6 +195,9 @@ type Model struct {
 	providerForm     providerForm
 	undo             undoStack
 	helpSelection    int
+	profileForm      profileForm
+	bulkAssign       bulkAssignState
+	swapProvider     swapProviderState
 
 	builtinTemplates []providercatalog.Template
 	builtinMap       map[string]providercatalog.Template
@@ -185,6 +227,7 @@ func New() (Model, error) {
 		original:         snapshot,
 		snapshot:         snapshot,
 		sections:         []Section{SectionProfiles, SectionAgents, SectionCategories, SectionProviders, SectionDefaults, SectionReview, SectionHelp, SectionSkills},
+		sectionIndex:     0,
 		selection:        map[Section]int{},
 		viewState:        stateList,
 		search:           search,
@@ -255,6 +298,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateProviderCatalog(msg)
 	case modeProviderEditor:
 		return m.updateProviderEditor(msg)
+	case modeProfileCreator:
+		return m.updateProfileCreator(msg)
+	case modeBulkAssign:
+		return m.updateBulkAssign(msg)
+	case modeSwapProvider:
+		return m.updateSwapProvider(msg)
 	}
 
 	if m.searchFocused {
@@ -349,6 +398,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.search.Focus()
 				return m, textinput.Blink
 			}
+		case "n":
+			if m.currentSection() == SectionProfiles && m.viewState == stateList {
+				m.mode = modeProfileCreator
+				m.profileForm = newProfileForm()
+				return m, textinput.Blink
+			}
+		case "b":
+			if m.viewState == stateList {
+				switch m.currentSection() {
+				case SectionProfiles:
+					keys := m.filteredProfiles()
+					profileKey := ""
+					if len(keys) > 0 && m.currentSelection() < len(keys) {
+						profileKey = keys[m.currentSelection()]
+					}
+					m.mode = modeBulkAssign
+					m.bulkAssign = bulkAssignState{targetType: "agents", targetProfile: profileKey}
+					m.resetSearch("Select model to assign to all agents")
+					m.searchFocused = true
+					m.search.Focus()
+					return m, textinput.Blink
+				case SectionAgents:
+					m.mode = modeBulkAssign
+					m.bulkAssign = bulkAssignState{targetType: "agents", targetProfile: ""}
+					m.resetSearch("Select model to assign to all agents")
+					m.searchFocused = true
+					m.search.Focus()
+					return m, textinput.Blink
+				}
+			}
+		case "c":
+			if m.viewState == stateList {
+				switch m.currentSection() {
+				case SectionProfiles:
+					keys := m.filteredProfiles()
+					profileKey := ""
+					if len(keys) > 0 && m.currentSelection() < len(keys) {
+						profileKey = keys[m.currentSelection()]
+					}
+					m.mode = modeBulkAssign
+					m.bulkAssign = bulkAssignState{targetType: "categories", targetProfile: profileKey}
+					m.resetSearch("Select model to assign to all categories")
+					m.searchFocused = true
+					m.search.Focus()
+					return m, textinput.Blink
+				case SectionCategories:
+					m.mode = modeBulkAssign
+					m.bulkAssign = bulkAssignState{targetType: "categories", targetProfile: ""}
+					m.resetSearch("Select model to assign to all categories")
+					m.searchFocused = true
+					m.search.Focus()
+					return m, textinput.Blink
+				}
+			}
+		case "s":
+			if m.currentSection() == SectionProfiles && m.viewState == stateList {
+				m.mode = modeSwapProvider
+				m.swapProvider = swapProviderState{}
+				m.resetSearch("Select source provider to replace")
+				m.searchFocused = true
+				m.search.Focus()
+				return m, textinput.Blink
+			}
 		case "x":
 			m.pushUndoForClear()
 			return m.clearCurrent()
@@ -366,7 +478,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
-		return "Loading..."
+		return "Loading... (width=" + fmt.Sprintf("%d", m.width) + " height=" + fmt.Sprintf("%d", m.height) + ")"
 	}
 
 	if m.mode == modeModelPicker {
@@ -378,25 +490,139 @@ func (m Model) View() string {
 	if m.mode == modeProviderEditor {
 		return m.viewProviderEditor()
 	}
+	if m.mode == modeProfileCreator {
+		return m.viewProfileCreator()
+	}
+	if m.mode == modeBulkAssign {
+		return m.viewBulkAssign()
+	}
+	if m.mode == modeSwapProvider {
+		return m.viewSwapProvider()
+	}
 
-	titleBar := m.viewTitleBar()
-	content := m.renderContent()
-	statusBar := m.viewStatusBar()
-	footer := m.viewFooter()
+	var output strings.Builder
+	output.WriteString("Oh My Opencode TUI " + getAppVersion(m.undo.changeCount()) + "\n")
+	output.WriteString("===========================\n\n")
 
-	return lipgloss.JoinVertical(lipgloss.Left, titleBar, content, statusBar, footer)
+	for i, section := range m.sections {
+		name := sectionTitle(section)
+		if i == m.sectionIndex {
+			output.WriteString("> " + name + "\n")
+		} else {
+			output.WriteString("  " + name + "\n")
+		}
+	}
+
+	output.WriteString("\n--- " + sectionTitle(m.currentSection()) + " ---\n")
+
+	switch m.currentSection() {
+	case SectionProfiles:
+		output.WriteString(m.viewProfilesPlain())
+	case SectionAgents:
+		output.WriteString(m.viewAgentsPlain())
+	case SectionCategories:
+		output.WriteString(m.viewCategoriesPlain())
+	}
+
+	return output.String()
+}
+
+func (m Model) viewProfilesPlain() string {
+	var output strings.Builder
+	keys := m.filteredProfiles()
+
+	if len(keys) == 0 {
+		output.WriteString("No profiles\n")
+		return output.String()
+	}
+
+	for i, key := range keys {
+		profile := m.snapshot.Profiles.Profiles[key]
+		marker := "  "
+		if i == m.currentSelection() {
+			marker = "> "
+		}
+
+		name := key
+		if key == m.activeProfile {
+			name += " [active]"
+		}
+
+		agentCount := len(profile.Agents)
+		categoryCount := len(profile.Categories)
+		if key == m.activeProfile {
+			agentCount = len(m.agents)
+			categoryCount = len(m.categories)
+		}
+
+		output.WriteString(fmt.Sprintf("%s%s\n", marker, name))
+		output.WriteString(fmt.Sprintf("   %s\n", profile.Description))
+		output.WriteString(fmt.Sprintf("   Agents: %d, Categories: %d\n\n", agentCount, categoryCount))
+	}
+
+	return output.String()
+}
+
+func (m Model) viewAgentsPlain() string {
+	var output strings.Builder
+	keys := m.filteredAgents()
+
+	if len(keys) == 0 {
+		output.WriteString("No agents\n")
+		return output.String()
+	}
+
+	for i, key := range keys {
+		assignment := m.agents[key]
+		marker := "  "
+		if i == m.currentSelection() {
+			marker = "> "
+		}
+
+		model := assignment.Model
+		if model == "" {
+			model = "(unassigned)"
+		}
+
+		output.WriteString(fmt.Sprintf("%s%s\n", marker, key))
+		output.WriteString(fmt.Sprintf("   Model: %s\n\n", model))
+	}
+
+	return output.String()
+}
+
+func (m Model) viewCategoriesPlain() string {
+	var output strings.Builder
+	keys := m.filteredCategories()
+
+	if len(keys) == 0 {
+		output.WriteString("No categories\n")
+		return output.String()
+	}
+
+	for i, key := range keys {
+		assignment := m.categories[key]
+		marker := "  "
+		if i == m.currentSelection() {
+			marker = "> "
+		}
+
+		model := assignment.Model
+		if model == "" {
+			model = "(unassigned)"
+		}
+
+		output.WriteString(fmt.Sprintf("%s%s\n", marker, key))
+		output.WriteString(fmt.Sprintf("   Model: %s\n\n", model))
+	}
+
+	return output.String()
 }
 
 func (m Model) viewTitleBar() string {
-	titleText := fmt.Sprintf(" Oh My Opencode TUI %s ", appVersion)
-	// Make title bar fill the width
-	style := lipgloss.NewStyle().
-		Background(cyan).
-		Foreground(black).
-		Bold(true).
-		Padding(0, 1).
-		Width(m.width)
-	return style.Render(titleText)
+	changeCount := m.undo.changeCount()
+	titleText := fmt.Sprintf("Oh My Opencode TUI %s", getAppVersion(changeCount))
+	return titleText
 }
 
 func (m Model) viewStatusBar() string {
@@ -418,7 +644,8 @@ func (m Model) viewStatusBar() string {
 	}
 
 	// Add version to last line
-	versionStr := fmt.Sprintf("  Version: %s", appVersion)
+	changeCount := m.undo.changeCount()
+	versionStr := fmt.Sprintf("  Version: %s", getAppVersion(changeCount))
 	lines = append(lines, versionStr)
 
 	content := strings.Join(lines, "\n")
@@ -628,6 +855,332 @@ func (m *Model) updateProviderEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return *m, tea.Batch(cmds...)
 }
 
+func (m *Model) updateProfileCreator(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc", "shift+enter":
+			m.mode = modeNormal
+			m.resetSearch("Search")
+			m.searchFocused = false
+			m.search.Blur()
+			m.status = "Cancelled profile creation"
+			return *m, nil
+		case "tab":
+			m.profileForm.focus = (m.profileForm.focus + 1) % len(m.profileForm.inputs)
+			m.focusProfileForm()
+			return *m, nil
+		case "shift+tab":
+			m.profileForm.focus--
+			if m.profileForm.focus < 0 {
+				m.profileForm.focus = len(m.profileForm.inputs) - 1
+			}
+			m.focusProfileForm()
+			return *m, nil
+		case "ctrl+s", "enter":
+			profileKey := strings.TrimSpace(m.profileForm.inputs[0].Value())
+			if profileKey == "" {
+				m.status = "Profile key is required"
+				return *m, nil
+			}
+			if _, exists := m.snapshot.Profiles.Profiles[profileKey]; exists {
+				m.status = fmt.Sprintf("Profile '%s' already exists", profileKey)
+				return *m, nil
+			}
+			displayName := strings.TrimSpace(m.profileForm.inputs[1].Value())
+			description := strings.TrimSpace(m.profileForm.inputs[2].Value())
+			if displayName == "" {
+				displayName = profileKey
+			}
+			if m.snapshot.Profiles.Profiles == nil {
+				m.snapshot.Profiles.Profiles = map[string]config.Profile{}
+			}
+			m.snapshot.Profiles.Profiles[profileKey] = config.Profile{
+				Name:        displayName,
+				Description: description,
+				Agents:      map[string]config.Assignment{},
+				Categories:  map[string]config.Assignment{},
+				Settings:    map[string]any{},
+			}
+			m.mode = modeNormal
+			m.resetSearch("Search")
+			m.searchFocused = false
+			m.search.Blur()
+			m.status = fmt.Sprintf("Created profile: %s", profileKey)
+			return *m, nil
+		}
+	}
+
+	for i := range m.profileForm.inputs {
+		if i == m.profileForm.focus {
+			m.profileForm.inputs[i], _ = m.profileForm.inputs[i].Update(msg)
+		} else {
+			m.profileForm.inputs[i].Blur()
+		}
+		cmds = append(cmds, textinput.Blink)
+	}
+	return *m, tea.Batch(cmds...)
+}
+
+func (m *Model) focusProfileForm() {
+	for i := range m.profileForm.inputs {
+		if i == m.profileForm.focus {
+			m.profileForm.inputs[i].Focus()
+		} else {
+			m.profileForm.inputs[i].Blur()
+		}
+	}
+}
+
+func (m *Model) updateBulkAssign(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.search, cmd = m.search.Update(msg)
+	options := m.filteredModelOptions()
+	m.pickerSelection = clamp(m.pickerSelection, len(options))
+
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc", "shift+enter":
+			m.mode = modeNormal
+			m.resetSearch("Search")
+			m.searchFocused = false
+			m.search.Blur()
+			m.status = "Cancelled bulk assign"
+			return *m, nil
+		case "down", "j":
+			m.pickerSelection = moveIndex(m.pickerSelection, len(options), 1)
+			return *m, nil
+		case "up", "k":
+			m.pickerSelection = moveIndex(m.pickerSelection, len(options), -1)
+			return *m, nil
+		case "tab":
+			if m.bulkAssign.targetType == "agents" {
+				m.bulkAssign.targetType = "categories"
+			} else {
+				m.bulkAssign.targetType = "agents"
+			}
+			return *m, nil
+		case "enter":
+			if len(options) == 0 {
+				return *m, nil
+			}
+			selected := options[m.pickerSelection]
+			count := 0
+
+			targetProfile := m.bulkAssign.targetProfile
+			if targetProfile == "" {
+				targetProfile = m.activeProfile
+			}
+
+			if m.bulkAssign.targetType == "agents" {
+				if targetProfile == m.activeProfile {
+					oldAgents := cloneAssignments(m.agents)
+					for key, assignment := range m.agents {
+						oldModel := assignment.Model
+						assignment.Model = selected.ID
+						m.agents[key] = assignment
+						if oldModel != selected.ID {
+							count++
+						}
+					}
+					m.undo.push(edit{
+						editType:  "bulkAssign",
+						key:       "agents",
+						newValue:  selected.ID,
+						oldAgents: oldAgents,
+					})
+				} else {
+					profile := m.snapshot.Profiles.Profiles[targetProfile]
+					if profile.Agents == nil {
+						profile.Agents = map[string]config.Assignment{}
+					}
+					for key, assignment := range profile.Agents {
+						oldModel := assignment.Model
+						assignment.Model = selected.ID
+						profile.Agents[key] = assignment
+						if oldModel != selected.ID {
+							count++
+						}
+					}
+					m.snapshot.Profiles.Profiles[targetProfile] = profile
+				}
+				m.status = fmt.Sprintf("Assigned %s to %d agents in profile '%s' (press Ctrl+S to save)", selected.ID, count, targetProfile)
+			} else {
+				if targetProfile == m.activeProfile {
+					oldCategories := cloneAssignments(m.categories)
+					for key, assignment := range m.categories {
+						oldModel := assignment.Model
+						assignment.Model = selected.ID
+						m.categories[key] = assignment
+						if oldModel != selected.ID {
+							count++
+						}
+					}
+					m.undo.push(edit{
+						editType:      "bulkAssign",
+						key:           "categories",
+						newValue:      selected.ID,
+						oldCategories: oldCategories,
+					})
+				} else {
+					profile := m.snapshot.Profiles.Profiles[targetProfile]
+					if profile.Categories == nil {
+						profile.Categories = map[string]config.Assignment{}
+					}
+					for key, assignment := range profile.Categories {
+						oldModel := assignment.Model
+						assignment.Model = selected.ID
+						profile.Categories[key] = assignment
+						if oldModel != selected.ID {
+							count++
+						}
+					}
+					m.snapshot.Profiles.Profiles[targetProfile] = profile
+				}
+				m.status = fmt.Sprintf("Assigned %s to %d categories in profile '%s' (press Ctrl+S to save)", selected.ID, count, targetProfile)
+			}
+			m.mode = modeNormal
+			m.resetSearch("Search")
+			m.searchFocused = false
+			m.search.Blur()
+			return *m, nil
+		}
+	}
+
+	return *m, cmd
+}
+
+func (m *Model) updateSwapProvider(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.search, cmd = m.search.Update(msg)
+
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc", "shift+enter":
+			m.mode = modeNormal
+			m.resetSearch("Search")
+			m.searchFocused = false
+			m.search.Blur()
+			m.swapProvider = swapProviderState{}
+			m.status = "Cancelled provider swap"
+			return *m, nil
+		case "down", "j":
+			if m.swapProvider.fromProvider == "" {
+				providers := m.getProviderList()
+				m.pickerSelection = moveIndex(m.pickerSelection, len(providers), 1)
+			} else if m.swapProvider.toProvider == "" {
+				providers := m.getProviderList()
+				m.pickerSelection = moveIndex(m.pickerSelection, len(providers), 1)
+			}
+			return *m, nil
+		case "up", "k":
+			if m.swapProvider.fromProvider == "" {
+				providers := m.getProviderList()
+				m.pickerSelection = moveIndex(m.pickerSelection, len(providers), -1)
+			} else if m.swapProvider.toProvider == "" {
+				providers := m.getProviderList()
+				m.pickerSelection = moveIndex(m.pickerSelection, len(providers), -1)
+			}
+			return *m, nil
+		case "enter":
+			providers := m.getProviderList()
+			if len(providers) == 0 {
+				return *m, nil
+			}
+			selected := providers[m.pickerSelection]
+			if m.swapProvider.fromProvider == "" {
+				m.swapProvider.fromProvider = selected
+				m.pickerSelection = 0
+				m.resetSearch("Select target provider")
+				m.searchFocused = true
+				m.search.Focus()
+				return *m, nil
+			} else if m.swapProvider.toProvider == "" {
+				if selected == m.swapProvider.fromProvider {
+					m.status = "Cannot swap to the same provider"
+					return *m, nil
+				}
+				m.swapProvider.toProvider = selected
+				count := m.performProviderSwap()
+
+				// Push undo entry for bulk swap
+				m.undo.push(edit{
+					editType:      "bulkSwap",
+					oldAgents:     m.swapProvider.oldAgents,
+					oldCategories: m.swapProvider.oldCategories,
+					oldDefault:    m.swapProvider.oldDefault,
+				})
+
+				m.mode = modeNormal
+				m.resetSearch("Search")
+				m.searchFocused = false
+				m.search.Blur()
+				m.status = fmt.Sprintf("Swapped %d models from %s to %s (press Ctrl+S to save)", count, m.swapProvider.fromProvider, m.swapProvider.toProvider)
+				m.swapProvider = swapProviderState{}
+				return *m, nil
+			}
+		}
+	}
+
+	return *m, cmd
+}
+
+func (m *Model) getProviderList() []string {
+	providerSet := map[string]struct{}{}
+	for _, opt := range m.allModelOptions() {
+		if opt.ProviderID != "" {
+			providerSet[opt.ProviderID] = struct{}{}
+		}
+	}
+	providers := make([]string, 0, len(providerSet))
+	for id := range providerSet {
+		if containsFold(id, m.search.Value()) {
+			providers = append(providers, id)
+		}
+	}
+	sort.Strings(providers)
+	return providers
+}
+
+func (m *Model) performProviderSwap() int {
+	count := 0
+	fromPrefix := m.swapProvider.fromProvider + "/"
+	toPrefix := m.swapProvider.toProvider + "/"
+
+	// Store old state for undo
+	m.swapProvider.oldAgents = cloneAssignments(m.agents)
+	m.swapProvider.oldCategories = cloneAssignments(m.categories)
+	m.swapProvider.oldDefault = m.defaultModel
+
+	// Swap agents
+	for key, assignment := range m.agents {
+		if strings.HasPrefix(assignment.Model, fromPrefix) {
+			newModel := toPrefix + strings.TrimPrefix(assignment.Model, fromPrefix)
+			assignment.Model = newModel
+			m.agents[key] = assignment
+			count++
+		}
+	}
+
+	// Swap categories
+	for key, assignment := range m.categories {
+		if strings.HasPrefix(assignment.Model, fromPrefix) {
+			newModel := toPrefix + strings.TrimPrefix(assignment.Model, fromPrefix)
+			assignment.Model = newModel
+			m.categories[key] = assignment
+			count++
+		}
+	}
+
+	// Also swap the default model if it matches
+	if strings.HasPrefix(m.defaultModel, fromPrefix) {
+		m.defaultModel = toPrefix + strings.TrimPrefix(m.defaultModel, fromPrefix)
+		count++
+	}
+
+	return count
+}
+
 func (m *Model) undoLast() (tea.Model, tea.Cmd) {
 	if !m.undo.canUndo() {
 		m.status = "Nothing to undo"
@@ -673,6 +1226,23 @@ func (m *Model) undoLast() (tea.Model, tea.Cmd) {
 			m.defaultModel = e.oldValue
 			m.status = fmt.Sprintf("Undid: restored default model to %s", e.oldValue)
 		}
+	case "bulkSwap":
+		if e.oldAgents != nil {
+			m.agents = cloneAssignments(e.oldAgents)
+		}
+		if e.oldCategories != nil {
+			m.categories = cloneAssignments(e.oldCategories)
+		}
+		m.defaultModel = e.oldDefault
+		m.status = "Undid: provider swap"
+	case "bulkAssign":
+		if e.oldAgents != nil {
+			m.agents = cloneAssignments(e.oldAgents)
+		}
+		if e.oldCategories != nil {
+			m.categories = cloneAssignments(e.oldCategories)
+		}
+		m.status = fmt.Sprintf("Undid: bulk assign to %s", e.key)
 	}
 
 	return *m, nil
@@ -1085,6 +1655,19 @@ func (m *Model) focusProviderForm() {
 	}
 }
 
+func newProfileForm() profileForm {
+	inputs := make([]textinput.Model, 3)
+	placeholders := []string{"my-profile", "My Profile", "Description of this profile"}
+	for i := range inputs {
+		inputs[i] = textinput.New()
+		inputs[i].Prompt = ""
+		inputs[i].Placeholder = placeholders[i]
+		inputs[i].Width = 48
+	}
+	inputs[0].Focus()
+	return profileForm{inputs: inputs, focus: 0}
+}
+
 func newProviderForm(tmpl providercatalog.Template, existing config.Provider) providerForm {
 	inputs := make([]textinput.Model, 5)
 	labels := []string{"Provider ID", "Display name", "Base URL", "API key", "ENV var (optional)"}
@@ -1127,14 +1710,17 @@ func (m Model) viewNav(width int) string {
 	items := make([]string, 0, len(m.sections))
 	for i, section := range m.sections {
 		name := sectionTitle(section)
+		prefix := "  "
 		if i == m.sectionIndex {
 			if m.viewState == stateList {
-				name = navActiveStyle.Render(" " + name + " ")
+				prefix = "▶ "
+				name = navActiveStyle.Render(prefix + name + " ")
 			} else {
-				name = navInactiveStyle.Render(" " + name + " ")
+				prefix = "○ "
+				name = navInactiveStyle.Render(prefix + name + " ")
 			}
 		} else {
-			name = navItemStyle.Render(" " + name)
+			name = navItemStyle.Render(prefix + name)
 		}
 		items = append(items, name)
 	}
@@ -1206,19 +1792,44 @@ func (m Model) viewProfiles(width int) string {
 		listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
 	}
 
-	detailContent := "Select a profile"
+	detailContent := lipgloss.JoinVertical(lipgloss.Left,
+		mutedStyle.Render("Profile Management"),
+		"",
+		cmdStyle.Render(" enter ")+" switch to profile",
+		cmdStyle.Render(" n ")+" create new profile",
+		cmdStyle.Render(" b ")+" bulk assign to all agents",
+		cmdStyle.Render(" c ")+" bulk assign to all categories",
+		cmdStyle.Render(" s ")+" swap all models to new provider",
+	)
+
 	if len(keys) > 0 && m.currentSelection() < len(keys) {
 		key := keys[m.currentSelection()]
 		profile := m.snapshot.Profiles.Profiles[key]
+
+		// Show working state counts if this is the active profile
+		agentCount := len(profile.Agents)
+		categoryCount := len(profile.Categories)
+		if key == m.activeProfile {
+			agentCount = len(m.agents)
+			categoryCount = len(m.categories)
+		}
+
 		detailContent = lipgloss.JoinVertical(lipgloss.Left,
 			detailTitleStyle.Render(choose(profile.Name, key)),
 			"",
 			fmt.Sprintf("Key: %s", key),
 			fmt.Sprintf("Extends: %s", choose(profile.Extends, "-")),
-			fmt.Sprintf("Agents: %d", len(profile.Agents)),
-			fmt.Sprintf("Categories: %d", len(profile.Categories)),
+			fmt.Sprintf("Agents: %d", agentCount),
+			fmt.Sprintf("Categories: %d", categoryCount),
 			"",
 			mutedStyle.Render(profile.Description),
+			"",
+			mutedStyle.Render("Commands:"),
+			cmdStyle.Render(" enter ")+" switch to profile ",
+			cmdStyle.Render(" n ")+" create new profile ",
+			cmdStyle.Render(" b ")+" bulk assign model to all agents ",
+			cmdStyle.Render(" c ")+" bulk assign model to all categories ",
+			cmdStyle.Render(" s ")+" swap all models to new provider ",
 		)
 	}
 
@@ -1260,10 +1871,18 @@ func (m Model) viewAssignments(keys []string, values map[string]config.Assignmen
 		listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
 	}
 
+	var bulkCmd string
+	if noun == "agent" {
+		bulkCmd = cmdStyle.Render(" b ") + " bulk assign to all agents "
+	} else {
+		bulkCmd = cmdStyle.Render(" c ") + " bulk assign to all categories "
+	}
+
 	detailContent := lipgloss.JoinVertical(lipgloss.Left,
 		mutedStyle.Render(fmt.Sprintf("Select a %s from the list", noun)),
 		"",
 		cmdStyle.Render(" Enter ")+" configure ",
+		bulkCmd,
 	)
 	if m.viewState == stateDetail && len(keys) > 0 && m.currentSelection() < len(keys) {
 		key := keys[m.currentSelection()]
@@ -1582,6 +2201,152 @@ func (m Model) viewProviderEditor() string {
 	return lipgloss.JoinVertical(lipgloss.Left, titleBar, body)
 }
 
+func (m Model) viewProfileCreator() string {
+	titleBar := titleBarStyle.Render(" Create New Profile ")
+
+	lines := []string{"", "  " + mutedStyle.Render("Enter profile details:"), ""}
+	labels := []string{"Profile Key (unique ID)", "Display Name", "Description"}
+
+	for i, input := range m.profileForm.inputs {
+		label := labels[i]
+		field := input.View()
+		if i == m.profileForm.focus {
+			field = pickerSelectedStyle.Render("▶ " + field + " ")
+		} else {
+			field = "  " + field
+		}
+		lines = append(lines, "  "+mutedStyle.Render(label), field, "")
+	}
+
+	help := "  " + cmdStyle.Render(" tab ") + "next " + cmdStyle.Render(" shift+tab ") + "prev " + cmdStyle.Render(" ctrl+s ") + "save " + cmdStyle.Render(" esc ") + "cancel"
+	lines = append(lines, help)
+
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.JoinVertical(lipgloss.Left, titleBar, body)
+}
+
+func (m Model) viewBulkAssign() string {
+	options := m.filteredModelOptions()
+
+	targetLabel := "Agents"
+	title := " Bulk Assign to Agents "
+	if m.bulkAssign.targetType == "categories" {
+		targetLabel = "Categories"
+		title = " Bulk Assign to Categories "
+	}
+
+	titleBar := titleBarStyle.Render(title)
+
+	var listContent string
+	if len(options) == 0 {
+		listContent = mutedStyle.Render("  No models match your search")
+	} else {
+		providerCounts := map[string]int{}
+		for _, opt := range options {
+			providerCounts[opt.ProviderName]++
+		}
+
+		items := make([]string, 0, len(options)+len(providerCounts))
+		currentProvider := ""
+		for i, opt := range options {
+			if opt.ProviderName != currentProvider {
+				currentProvider = opt.ProviderName
+				header := pickerProviderHeaderStyle.Render("  " + currentProvider)
+				count := pickerProviderMetaStyle.Render(fmt.Sprintf(" %d", providerCounts[currentProvider]))
+				items = append(items, lipgloss.JoinHorizontal(lipgloss.Left, header, count))
+			}
+
+			label := "  " + opt.Name
+			if i == m.pickerSelection {
+				label = pickerSelectedStyle.Render("▶ " + opt.Name + " ")
+			}
+
+			metaParts := []string{}
+			if opt.ID != "" {
+				metaParts = append(metaParts, opt.ID)
+			}
+			if opt.Source != "" {
+				metaParts = append(metaParts, opt.Source)
+			}
+
+			if len(metaParts) > 0 {
+				label = lipgloss.JoinHorizontal(lipgloss.Left, label, pickerModelMetaStyle.Render("  "+strings.Join(metaParts, "  •  ")))
+			}
+			items = append(items, label)
+		}
+
+		listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
+	}
+
+	searchLine := "  " + m.search.View()
+
+	profileLabel := m.bulkAssign.targetProfile
+	if profileLabel == "" {
+		profileLabel = m.activeProfile
+	}
+	info := "  " + mutedStyle.Render(fmt.Sprintf("Profile: %s | Target: %s (press Tab to switch)", profileLabel, targetLabel))
+	help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "assign " + cmdStyle.Render(" tab ") + "switch target " + cmdStyle.Render(" esc ") + "back " + cmdStyle.Render(" type ") + "filter"
+
+	body := lipgloss.JoinVertical(lipgloss.Left, titleBar, "", info, "", searchLine, "", listContent, "", help)
+	return body
+}
+
+func (m Model) viewSwapProvider() string {
+	titleBar := titleBarStyle.Render(" Swap Provider ")
+
+	var content string
+	if m.swapProvider.fromProvider == "" {
+		providers := m.getProviderList()
+		var listContent string
+		if len(providers) == 0 {
+			listContent = mutedStyle.Render("  No providers available")
+		} else {
+			items := make([]string, len(providers))
+			for i, provider := range providers {
+				line := "  " + provider
+				if i == m.pickerSelection {
+					line = pickerSelectedStyle.Render("▶ " + provider + " ")
+				}
+				items[i] = line
+			}
+			listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
+		}
+
+		searchLine := "  " + m.search.View()
+		info := "  " + mutedStyle.Render("Step 1: Select the provider to replace")
+		help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "select " + cmdStyle.Render(" esc ") + "cancel " + cmdStyle.Render(" type ") + "filter"
+
+		content = lipgloss.JoinVertical(lipgloss.Left, "", info, "", searchLine, "", listContent, "", help)
+	} else {
+		providers := m.getProviderList()
+		var listContent string
+		if len(providers) == 0 {
+			listContent = mutedStyle.Render("  No providers available")
+		} else {
+			items := make([]string, 0, len(providers))
+			for i, provider := range providers {
+				if provider == m.swapProvider.fromProvider {
+					continue
+				}
+				line := "  " + provider
+				if i == m.pickerSelection {
+					line = pickerSelectedStyle.Render("▶ " + provider + " ")
+				}
+				items = append(items, line)
+			}
+			listContent = lipgloss.JoinVertical(lipgloss.Left, items...)
+		}
+
+		searchLine := "  " + m.search.View()
+		info := "  " + mutedStyle.Render(fmt.Sprintf("Step 2: Select target provider to replace '%s'", m.swapProvider.fromProvider))
+		help := "  " + cmdStyle.Render(" ↑↓ ") + "navigate " + cmdStyle.Render(" enter ") + "select " + cmdStyle.Render(" esc ") + "cancel " + cmdStyle.Render(" type ") + "filter"
+
+		content = lipgloss.JoinVertical(lipgloss.Left, "", info, "", searchLine, "", listContent, "", help)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, titleBar, content)
+}
+
 type assignmentDiff struct {
 	agentChanges    int
 	categoryChanges int
@@ -1828,7 +2593,8 @@ var (
 				Foreground(cream)
 
 	navItemStyle = lipgloss.NewStyle().
-			Foreground(cream)
+			Foreground(cream).
+			Bold(true)
 
 	contentStyle = lipgloss.NewStyle().
 			Background(background).
